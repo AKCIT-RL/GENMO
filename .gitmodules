@@ -3,4 +3,4 @@
 	url = https://gitlab.com/libeigen/eigen.git
 [submodule "third_party/GVHMR"]
 	path = third_party/GVHMR
-	url = git@github.com:zju3dv/GVHMR.git
+	url = https://github.com/AKCIT-RL/GVHMR.git

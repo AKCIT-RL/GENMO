@@ -1,5 +1,7 @@
 import os
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -81,10 +83,52 @@ def save_video(images, video_path, fps=30, crf=17):
     elif isinstance(images, list):
         images = np.array(images).astype(np.uint8)
 
-    with iio.imopen(video_path, "w", plugin="pyav") as writer:
-        writer.init_video_stream("libx264", fps=fps)
-        writer._video_stream.options = {"crf": str(crf)}
-        writer.write(images)
+    # Usar cv2.VideoWriter como alternativa mais confiável ao imageio/pyav
+    # que tem problemas com time_base None
+    if len(images) == 0:
+        raise ValueError("Cannot save video with 0 frames")
+    
+    N, H, W, C = images.shape
+    assert C == 3, "Images must be RGB (3 channels)"
+    
+    # Convert RGB to BGR for cv2
+    images_bgr = images[..., ::-1]
+    
+    # Ensure width and height are even (codec requirement)
+    if W % 2 != 0 or H % 2 != 0:
+        # Resize to even dimensions
+        W = W if W % 2 == 0 else W - 1
+        H = H if H % 2 == 0 else H - 1
+        images_bgr = np.array([cv2.resize(img, (W, H)) for img in images_bgr])
+    
+    # Use ffmpeg via subprocess for better control and reliability
+    # Create temporary file for frames
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Save frames as temporary images
+        frame_paths = []
+        for i, frame in enumerate(images_bgr):
+            frame_path = os.path.join(temp_dir, f"frame_{i:06d}.jpg")
+            cv2.imwrite(frame_path, frame)
+            frame_paths.append(frame_path)
+        
+        # Use ffmpeg to create video with crf
+        # First create a temporary video without crf
+        temp_video = os.path.join(temp_dir, "temp.mp4")
+        cmd = [
+            "ffmpeg", "-y", "-framerate", str(fps),
+            "-i", os.path.join(temp_dir, "frame_%06d.jpg"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-crf", str(crf),
+            temp_video
+        ]
+        subprocess.run(cmd, check=True, capture_output=True)
+        
+        # Move temporary video to final destination
+        shutil.move(temp_video, video_path)
+    finally:
+        # Clean up temporary files
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def get_writer(video_path, fps=30, crf=17):
@@ -189,10 +233,48 @@ def resize_and_pad_video(video_path, target_size):
 def merge_videos_horizontal(in_video_paths: list, out_video_path: str):
     if len(in_video_paths) < 2:
         raise ValueError("At least two video paths are required for merging.")
-    inputs = [ffmpeg.input(path) for path in in_video_paths]
+    
+    # Verify that all videos exist
+    for path in in_video_paths:
+        if not Path(path).exists():
+            raise FileNotFoundError(f"Video file not found: {path}")
+    
+    # Get video information to ensure same height
+    probes = [ffmpeg.probe(path) for path in in_video_paths]
+    video_streams = [
+        next((stream for stream in probe["streams"] if stream["codec_type"] == "video"), None)
+        for probe in probes
+    ]
+    
+    # Encontrar a altura máxima
+    heights = [int(stream["height"]) for stream in video_streams]
+    max_height = max(heights)
+    
+    # Create inputs and resize to same height if necessary
+    inputs = []
+    for i, path in enumerate(in_video_paths):
+        input_stream = ffmpeg.input(path)
+        if int(video_streams[i]["height"]) != max_height:
+            # Calculate proportional width maintaining aspect ratio
+            width = int(video_streams[i]["width"])
+            height = int(video_streams[i]["height"])
+            new_width = int(width * max_height / height)
+            # Garantir que a largura seja par (requisito do ffmpeg)
+            new_width = new_width if new_width % 2 == 0 else new_width - 1
+            max_height_even = max_height if max_height % 2 == 0 else max_height - 1
+            input_stream = ffmpeg.filter(input_stream, "scale", new_width, max_height_even)
+        inputs.append(input_stream)
+    
+    # Mesclar horizontalmente
     merged_video = ffmpeg.filter(inputs, "hstack", inputs=len(inputs))
     output = ffmpeg.output(merged_video, out_video_path)
-    ffmpeg.run(output, overwrite_output=True, quiet=True)
+    
+    # Executar com tratamento de erro melhorado
+    try:
+        ffmpeg.run(output, overwrite_output=True, quiet=True)
+    except ffmpeg.Error as e:
+        error_msg = e.stderr.decode() if e.stderr else 'No stderr available'
+        raise RuntimeError(f"ffmpeg error: {error_msg}") from e
 
 
 def merge_videos_vertical(in_video_paths: list, out_video_path: str):

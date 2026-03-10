@@ -1132,10 +1132,18 @@ class GENMO(pl.LightningModule):
             batch["encoded_text"] = batch["text_embed"].cuda()
         else:
             if "caption" in data:
-                batch["caption"] = [data["caption"]]
+                # Garantir que caption é uma string válida
+                caption = data["caption"]
+                if not isinstance(caption, str):
+                    caption = str(caption) if caption is not None else ""
+                batch["caption"] = [caption]
             else:
                 batch["caption"] = [""]
-            batch["has_text"] = torch.tensor([True])
+            # Usar has_text de data se disponível, senão usar True
+            if "has_text" in data:
+                batch["has_text"] = data["has_text"]
+            else:
+                batch["has_text"] = torch.tensor([True])
             batch["encoded_text"] = self.encode_text(
                 batch["caption"], batch["has_text"]
             )

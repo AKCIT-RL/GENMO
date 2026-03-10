@@ -3,6 +3,8 @@
 inputs
 out
 outputs
+models/
+imgs_1
 
 # All file or folders start with tmp will be ignored
 tmp*
@@ -116,6 +118,11 @@ ipython_config.py
 #   in version control.
 #   https://pdm.fming.dev/#use-with-ide
 .pdm.toml
+
+# uv
+#   uv.lock should be committed for reproducibility
+#   https://docs.astral.sh/uv/guides/projects/#lock-files
+#uv.lock
 
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/

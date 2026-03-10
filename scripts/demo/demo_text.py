@@ -1,4 +1,5 @@
 import argparse
+import copy
 import os
 import subprocess
 from glob import glob
@@ -155,6 +156,147 @@ def create_text_video(
     print(f"Video saved to {output_path}")
 
 
+def has_video_input(cfg):
+    """
+    Checks if there is video as input.
+    
+    Args:
+        cfg: Hydra configuration
+        
+    Returns:
+        bool: True if video1_path exists and is valid
+    """
+    if not hasattr(cfg, 'video1_path') or cfg.video1_path is None:
+        return False
+    video_path = Path(cfg.video1_path)
+    return video_path.exists() and video_path.is_file()
+
+
+def has_text_input(cfg):
+    """
+    Checks if there is text as input.
+    
+    Args:
+        cfg: Hydra configuration
+        
+    Returns:
+        bool: True if text1 is defined and not empty
+    """
+    if hasattr(cfg, 'text1_file') and cfg.text1_file is not None:
+        return True
+    if hasattr(cfg, 'text1') and cfg.text1 is not None and str(cfg.text1).strip():
+        return True
+    return False
+
+
+def load_video_data(cfg, vid=1):
+    """
+    Loads processed video data.
+    
+    Args:
+        cfg: Hydra configuration
+        vid: Video ID (1 or 2)
+        
+    Returns:
+        dict: Dictionary with video data in the format expected by the model
+    """
+    paths = cfg.paths
+    if vid == 1:
+        video_path = cfg.video1_path
+        bbx_path = paths.bbx1
+        vitpose_path = paths.vitpose1
+        vit_features_path = paths.vit_features1
+        slam_path = paths.slam1
+        static_cam = cfg.static_cam1
+        video_name = getattr(cfg, 'video1_name', None) or Path(video_path).stem
+    else:
+        video_path = cfg.video2_path
+        bbx_path = paths.bbx2
+        vitpose_path = paths.vitpose2
+        vit_features_path = paths.vit_features2
+        slam_path = paths.slam2
+        static_cam = cfg.static_cam2
+        video_name = getattr(cfg, 'video2_name', None) or Path(video_path).stem
+    
+    # Load processed data
+    length, width, height = get_video_lwh(video_path)
+    
+    # Load bounding boxes
+    bbx_data = torch.load(bbx_path)
+    bbx_xys = bbx_data["bbx_xys"]
+    
+    # Load 2D keypoints
+    vitpose = torch.load(vitpose_path)
+    if isinstance(vitpose, tuple):
+        vitpose = vitpose[0]
+    kp2d = vitpose
+    
+    # Load image features
+    f_imgseq = torch.load(vit_features_path)
+    
+    # Load or create camera
+    if static_cam:
+        R_w2c = torch.eye(3).repeat(length, 1, 1)
+        t_w2c = torch.zeros(length, 3)
+    else:
+        traj = torch.load(slam_path)
+        if traj.shape[1] == 4:  # If it's a 4x4 transformation matrix
+            R_w2c = torch.from_numpy(traj[:, :3, :3])
+            t_w2c = torch.from_numpy(traj[:, :3, 3])
+        else:  # If it's only a 3x3 rotation
+            R_w2c = torch.from_numpy(traj[:, :3, :3])
+            t_w2c = torch.zeros(length, 3)
+    
+    # Estimate K if necessary
+    K_fullimg = estimate_K(width, height).repeat(length, 1, 1)
+    
+    # Calculate camera velocities
+    cam_angvel = compute_cam_angvel(R_w2c)
+    cam_tvel = compute_cam_tvel(t_w2c)
+    
+    # Create transformations
+    T_w2c = torch.eye(4).reshape(1, 4, 4).repeat(length, 1, 1)
+    T_w2c[:, :3, :3] = R_w2c
+    T_w2c[:, :3, 3] = t_w2c
+    gt_T_w2c = T_w2c.clone()
+    
+    # Determinar gênero (padrão: neutral)
+    gender = getattr(cfg, 'gender', 'neutral')
+    
+    # Create data structure
+    data = {
+        "meta": [
+            {
+                "vid": video_name,
+                "caption": getattr(cfg, 'text1', '') if has_text_input(cfg) else '',
+            }
+        ],
+        "length": torch.tensor(length),
+        "bbx_xys": bbx_xys,
+        "K_fullimg": K_fullimg,
+        "f_imgseq": f_imgseq,
+        "kp2d": kp2d,
+        "cam_angvel": cam_angvel,
+        "cam_tvel": cam_tvel,
+        "R_w2c": R_w2c,
+        "T_w2c": T_w2c,
+        "gt_T_w2c": gt_T_w2c,
+        "gender": gender,
+        "caption": str(getattr(cfg, 'text1', '') or ''),
+        "has_text": torch.tensor([has_text_input(cfg)]),
+        "mask": {
+            "valid": torch.ones(length),
+            "has_img_mask": torch.ones(length).bool(),
+            "has_2d_mask": torch.ones(length).bool(),
+            "has_cam_mask": torch.ones(length).bool(),
+            "has_audio_mask": torch.zeros(length).bool(),
+            "has_music_mask": torch.zeros(length).bool(),
+        },
+    }
+    
+    return data
+
+
 @torch.no_grad()
 def run_preprocess_text(cfg):
     Log.info("[Preprocess] Start text!")
@@ -207,6 +349,10 @@ def run_preprocess(cfg, vid=1):
     Log.info(f"[Preprocess] Start {vid}!")
     tic = Log.time()
     paths = cfg.paths
+    
+    # Garantir que o diretório preprocess existe
+    Path(cfg.preprocess_dir).mkdir(parents=True, exist_ok=True)
+    
     # video_path = cfg.video_path
     if vid == 1:
         video_path = cfg.video1_path
@@ -228,6 +374,8 @@ def run_preprocess(cfg, vid=1):
 
     # Get bbx tracking result
     if not Path(bbx_path).exists():
+        # Garantir que o diretório do arquivo existe
+        Path(bbx_path).parent.mkdir(parents=True, exist_ok=True)
         tracker = Tracker()
         bbx_xyxy = tracker.get_one_track(video_path).float()  # (L, 4)
         bbx_xys = get_bbx_xys_from_xyxy(
@@ -246,6 +394,7 @@ def run_preprocess(cfg, vid=1):
 
     # Get VitPose
     if not Path(vitpose_path).exists():
+        Path(vitpose_path).parent.mkdir(parents=True, exist_ok=True)
         vitpose_extractor = VitPoseExtractor()
         vitpose = vitpose_extractor.extract(video_path, bbx_xys)
         torch.save(vitpose, vitpose_path)
@@ -305,6 +454,7 @@ def run_preprocess(cfg, vid=1):
 
     # Get vit features
     if not Path(vit_features_path).exists():
+        Path(vit_features_path).parent.mkdir(parents=True, exist_ok=True)
         extractor = Extractor()
         vit_features = extractor.extract_video_features(video_path, bbx_xys)
         torch.save(vit_features, vit_features_path)
@@ -338,7 +488,7 @@ def render_incam(cfg, vid_slice, vid=1):
 
     smplx = make_smplx("supermotion").cuda()
     smplx2smpl = torch.load("inputs/checkpoints/body_models/smplx2smpl_sparse.pt").cuda()
-    faces_smpl = make_smplx("smpl").faces
+    faces_smpl = make_smplx("smpl").faces  # Usar faces do SMPL (compatível com vértices convertidos)
 
     # smpl
     smplx_out = smplx(**to_cuda(pred["smpl_params_incam"]))
@@ -375,10 +525,12 @@ def render_incam(cfg, vid_slice, vid=1):
 
     # -- render mesh -- #
     verts_incam = pred_c_verts
-    writer = get_writer(incam_video_path, fps=30, crf=CRF)
     assert abs(get_video_lwh(video_30fps_path)[0] - len(verts_incam)) < 10, (
         f"Video length mismatch: {get_video_lwh(video_30fps_path)[0]} != {len(verts_incam)}"
     )
+    
+    # Acumular frames e escrever todos de uma vez (mais confiável que write_frame)
+    frames_list = []
     for i, img_raw in tqdm(
         enumerate(reader),
         total=get_video_lwh(video_30fps_path)[0],
@@ -396,9 +548,12 @@ def render_incam(cfg, vid_slice, vid=1):
         # rd_point = (bbx_xys_[:2] + bbx_xys_[2:] / 2).astype(int)
         # img = cv2.rectangle(img, lu_point, rd_point, (255, 178, 102), 2)
 
-        writer.write_frame(img)
-    writer.close()
+        frames_list.append(img)
     reader.close()
+    
+    # Escrever todos os frames de uma vez
+    frames_array = np.array(frames_list).astype(np.uint8)
+    save_video(frames_array, incam_video_path, fps=30, crf=CRF)
 
 
 def render_global_o3d(cfg, orig_fps):
@@ -411,7 +566,7 @@ def render_global_o3d(cfg, orig_fps):
     pred = torch.load(cfg.paths.hmr4d_results)
     smplx = make_smplx("supermotion").cuda()
     smplx2smpl = torch.load("inputs/checkpoints/body_models/smplx2smpl_sparse.pt").cuda()
-    faces_smpl = make_smplx("smpl").faces
+    faces_smpl = make_smplx("smpl").faces  # Usar faces do SMPL (compatível com vértices convertidos)
     J_regressor = torch.load(
         "inputs/checkpoints/body_models/smpl_neutral_J_regressor.pt"
     ).cuda()
@@ -448,7 +603,6 @@ def render_global_o3d(cfg, orig_fps):
     device = verts_glob_list.device
     # global_video_path = f"out/{vis_type}_video/{fname}.mp4"
     os.makedirs(os.path.dirname(global_video_path), exist_ok=True)
-    writer = get_writer(global_video_path, fps=orig_fps, crf=CRF)
 
     mat_settings = Settings()
 
@@ -508,6 +662,9 @@ def render_global_o3d(cfg, orig_fps):
 
     T_c2w = camera.get_view_matrix()
     R_w2c = T_c2w[:3, :3].T
+    
+    # Acumular frames e escrever todos de uma vez (mais confiável que write_frame)
+    frames_list = []
     for t, verts in tqdm(enumerate(verts_glob_list)):
         verts = verts_glob_list[t]  # + [gv]
         mat = o3d.visualization.rendering.MaterialRecord()
@@ -532,8 +689,11 @@ def render_global_o3d(cfg, orig_fps):
         # import ipdb; ipdb.set_trace()
         # o3d.io.write_image("out/tmp.png", img)
         # img = cv2.imread("out/tmp.png")
-        writer.write_frame(np.array(img))
-    writer.close()
+        frames_list.append(np.array(img))
+    
+    # Escrever todos os frames de uma vez
+    frames_array = np.array(frames_list).astype(np.uint8)
+    save_video(frames_array, global_video_path, fps=orig_fps, crf=CRF)
     print(f"Saved to {global_video_path}")
 
 
@@ -547,7 +707,7 @@ def render_global(cfg):
     pred = torch.load(cfg.paths.hmr4d_results)
     smplx = make_smplx("supermotion").cuda()
     smplx2smpl = torch.load("inputs/checkpoints/body_models/smplx2smpl_sparse.pt").cuda()
-    faces_smpl = make_smplx("smpl").faces
+    faces_smpl = make_smplx("smpl").faces  # Usar faces do SMPL (compatível com vértices convertidos)
     J_regressor = torch.load(
         "inputs/checkpoints/body_models/smpl_neutral_J_regressor.pt"
     ).cuda()
@@ -591,8 +751,22 @@ def render_global(cfg):
     # global_T = T_w2c[:, :3, 3]
 
     # -- rendering code -- #
-    video_path = cfg.video_path
-    length, width, height = get_video_lwh(video_path)
+    # Determine which video to use for rendering
+    video_path = None
+    if hasattr(cfg, 'text1_video_path') and cfg.text1_video_path and Path(cfg.text1_video_path).exists():
+        video_path = cfg.text1_video_path
+    elif hasattr(cfg, 'video1_path') and cfg.video1_path and Path(cfg.video1_path).exists():
+        video_path = cfg.video1_path
+    elif hasattr(cfg, 'video_path') and cfg.video_path and Path(cfg.video_path).exists():
+        video_path = cfg.video_path
+    
+    if video_path and Path(video_path).exists():
+        length, width, height = get_video_lwh(video_path)
+    else:
+        # If there's no video, use default dimensions and length from pred
+        length = len(pred["smpl_params_global"]["transl"])
+        width, height = 1280, 720
+    
     _, _, K = create_camera_sensor(width, height, 24)  # render as 24mm lens
 
     # renderer
@@ -604,15 +778,25 @@ def render_global(cfg):
     renderer.set_ground(scale * 1.5, cx, cz)
     color = torch.ones(3).float().cuda() * 0.8
 
-    render_length = length if not debug_cam else 8
-    writer = get_writer(global_video_path, fps=30, crf=CRF)
+    # Garantir que não tentamos renderizar mais frames do que existem no pred
+    pred_length = len(verts_glob)
+    render_length = min(length, pred_length) if not debug_cam else min(8, pred_length)
+    if render_length > pred_length:
+        Log.info(f"[Render Global] Warning: Video has {length} frames but pred has only {pred_length}. Rendering {pred_length} frames.")
+        render_length = pred_length
+    
+    # Acumular frames e escrever todos de uma vez (mais confiável que write_frame)
+    frames_list = []
     for i in tqdm(range(render_length), desc=f"Rendering Global"):
         cameras = renderer.create_camera(global_R[i], global_T[i])
         img = renderer.render_with_ground(
             verts_glob[[i]], color[None], cameras, global_lights
         )
-        writer.write_frame(img)
-    writer.close()
+        frames_list.append(img)
+    
+    # Escrever todos os frames de uma vez
+    frames_array = np.array(frames_list).astype(np.uint8)
+    save_video(frames_array, global_video_path, fps=30, crf=CRF)
 
 
 @hydra.main(version_base="1.3", config_path="../../configs", config_name="demo")
@@ -622,8 +806,41 @@ def main(cfg):
         text_file = open(cfg.text1_file, "r")
         cfg.text1 = text_file.read().strip()
 
-    cfg.text1_video_name = cfg.text1.replace(" ", "_").replace(".", "")
-    cfg.text1_video_path = os.path.join(cfg.output_dir, cfg.text1.replace(" ", "_").replace(".", "") + ".mp4")
+    # Detectar tipo de input
+    has_video = has_video_input(cfg)
+    has_text = has_text_input(cfg)
+    
+    if not has_video and not has_text:
+        raise ValueError("Must provide at least text (text1) or video (video1_path)")
+    
+    # Determine operation mode
+    if has_video and has_text:
+        mode = "both"
+        Log.info("[Mode] Text + Video")
+    elif has_video:
+        mode = "video"
+        Log.info("[Mode] Video Only")
+    else:
+        mode = "text"
+        Log.info("[Mode] Text Only")
+    
+    # Configurar output_dir baseado no modo
+    if mode == "text":
+        cfg.text1_video_name = cfg.text1.replace(" ", "_").replace(".", "")
+        cfg.text1_video_path = os.path.join(cfg.output_dir, cfg.text1.replace(" ", "_").replace(".", "") + ".mp4")
+    elif mode == "video":
+        video_name = getattr(cfg, 'video1_name', None) or Path(cfg.video1_path).stem
+        if not hasattr(cfg, 'text1_video_name') or cfg.text1_video_name is None:
+            cfg.text1_video_name = video_name
+        if not hasattr(cfg, 'text1_video_path') or cfg.text1_video_path is None:
+            cfg.text1_video_path = os.path.join(cfg.output_dir, video_name + ".mp4")
+    else:  # both
+        if has_text:
+            cfg.text1_video_name = cfg.text1.replace(" ", "_").replace(".", "")
+        else:
+            video_name = getattr(cfg, 'video1_name', None) or Path(cfg.video1_path).stem
+            cfg.text1_video_name = video_name
+        cfg.text1_video_path = os.path.join(cfg.output_dir, cfg.text1_video_name + ".mp4")
 
     # Output
     Log.info(f"[Output Dir]: {cfg.output_dir}")
@@ -634,44 +851,76 @@ def main(cfg):
     Log.info(f"[GPU]: {torch.cuda.get_device_properties('cuda')}")
 
     # ===== Preprocess and save to disk ===== #
-    data_text = run_preprocess_text(cfg)
-    length = cfg.text_length
-    width, height = 1280, 720
+    data_list = []
+    
+    # Process text if available
+    if has_text:
+        Log.info("[Preprocess] Processing text...")
+        data_text = run_preprocess_text(cfg)
+        length = cfg.text_length
+        width, height = 1280, 720
 
-    # generate text video
-    text_video_path = Path(cfg.text1_video_path)
-    if not text_video_path.exists() or True:
-        Log.info("[Generate Text Video]")
-        create_text_video(
-            text_video_path,
-            cfg.text1,
-            fps=30,
-            num_frames=cfg.text_length,
-            width=width,
-            height=height,
-            font_size=int(min(width, height) * 0.1),
-        )
-
-    # merge data
-    data = dict()
-    tot_length = data_text["length"]
-    # multi_text_data = {
-    #     "vid": ["text1"],
-    #     "caption": [cfg.text1],
-    #     "text_ind": [0],
-    #     "window_start": [0],
-    #     "window_end": [1],
-    # }
-    # multi_text_data["window_start"] = torch.tensor(multi_text_data["window_start"])
-    # multi_text_data["window_end"] = torch.tensor(multi_text_data["window_end"])
-    data_text["meta"] = [
-        {
-            "vid": "text1",
-            "caption": cfg.text1,
-            # "multi_text_data": multi_text_data,
-        }
-    ]
-    data = data_text
+        # generate text video
+        text_video_path = Path(cfg.text1_video_path)
+        if not text_video_path.exists() or True:
+            Log.info("[Generate Text Video]")
+            create_text_video(
+                str(text_video_path),
+                cfg.text1,
+                fps=30,
+                num_frames=cfg.text_length,
+                width=width,
+                height=height,
+                font_size=int(min(width, height) * 0.1),
+            )
+        
+        data_text["meta"] = [
+            {
+                "vid": "text1",
+                "caption": cfg.text1,
+            }
+        ]
+        data_list.append(data_text)
+    
+    # Process video if available
+    if has_video:
+        Log.info("[Preprocess] Processing video...")
+        # Ensure video was processed
+        run_preprocess(cfg, vid=1)
+        # Load processed data
+        data_video = load_video_data(cfg, vid=1)
+        data_list.append(data_video)
+    
+    # Combine data
+    if len(data_list) == 1:
+        data = data_list[0]
+    else:
+        # Combine multiple inputs (text + video)
+        # Identify which is video and which is text based on insertion order
+        # data_list[0] = text (if has_text)
+        # data_list[1] = video (if has_video)
+        data_text = data_list[0] if has_text else None
+        data_video = data_list[1] if has_video and len(data_list) > 1 else (data_list[0] if has_video else None)
+        
+        # Use video data as base (has more visual information)
+        if data_video is not None:
+            data = copy.deepcopy(data_video)
+            
+            # If there's text, add as conditioning
+            if data_text is not None:
+                # Add text to video caption
+                caption_text = data_text.get("caption", "")
+                data["caption"] = str(caption_text) if caption_text is not None else ""
+                if "meta" in data and "meta" in data_text and len(data["meta"]) > 0 and len(data_text["meta"]) > 0:
+                    data["meta"][0]["caption"] = data_text["meta"][0].get("caption", data["caption"])
+                data["has_text"] = torch.tensor([True])
+                Log.info("[Data] Combining video + text: using video data with text as conditioning")
+            else:
+                Log.info("[Data] Using video data")
+        else:
+            # Fallback: use first input
+            data = data_list[0]
+            Log.info("[Data] Using first available input")
 
     debug = False
     if debug:
@@ -689,24 +938,40 @@ def main(cfg):
         Log.info("[GENMO] Predicting")
         model = hydra.utils.instantiate(cfg.model, _recursive_=False)
 
-        test_cp = cfg.get("test_checkpoint", "last")
-        if cfg.version is None:
-            version = find_last_version(cfg.ckpt_dir)
-            if version is None or cfg.get("rsync_ckpt", False):
-                remote_ckpt_dir = os.path.join(cfg.remote_results_path, cfg.data_name, cfg.exp_name)
-                version = find_last_version(remote_ckpt_dir, cp=test_cp)
-                ckpt_path = os.path.join("outputs", cfg.data_name, cfg.exp_name, f"version_{version}", "checkpoints", "last.ckpt")
-                print(f"rsyncing from remote {remote_ckpt_dir} to {ckpt_path}")
-                os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
-                rsync_file_from_remote(
-                    ckpt_path,
-                    remote_ckpt_dir,
-                    # "outputs",
-                    cfg.ckpt_dir,
-                    hostname="cs-oci-ord-dc-03",
-                )
+        # Se ckpt_path está especificado diretamente, usar ele
+        if cfg.get("ckpt_path") is not None and cfg.ckpt_path:
+            ckpt_path = cfg.ckpt_path
+            Log.info(f"[GENMO] Using checkpoint from: {ckpt_path}")
+        else:
+            test_cp = cfg.get("test_checkpoint", "last")
+            if cfg.version is None:
+                version = find_last_version(cfg.ckpt_dir)
+                if version is None:
+                    # If there's no local version and rsync is disabled, try to fetch from remote only to get the version
+                    if cfg.get("rsync_ckpt", False):
+                        remote_ckpt_dir = os.path.join(cfg.remote_results_path, cfg.data_name, cfg.exp_name)
+                        version = find_last_version(remote_ckpt_dir, cp=test_cp)
+                        ckpt_path = os.path.join("outputs", cfg.data_name, cfg.exp_name, f"version_{version}", "checkpoints", "last.ckpt")
+                        print(f"rsyncing from remote {remote_ckpt_dir} to {ckpt_path}")
+                        os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+                        rsync_file_from_remote(
+                            ckpt_path,
+                            remote_ckpt_dir,
+                            cfg.ckpt_dir,
+                            hostname="cs-oci-ord-dc-03",
+                        )
+                    else:
+                        # Se rsync está desabilitado e não há checkpoint local, lançar erro
+                        raise FileNotFoundError(
+                            f"No checkpoint found locally in {cfg.ckpt_dir} and rsync_ckpt is disabled. "
+                            f"Please either: 1) Enable rsync_ckpt=true, 2) Ensure checkpoints exist locally, "
+                            f"or 3) Specify ckpt_path directly."
+                        )
+                else:
+                    ckpt_path = os.path.join(cfg.ckpt_dir, f"version_{version}", "checkpoints", "last.ckpt")
             else:
-                ckpt_path = os.path.join(cfg.ckpt_dir, f"version_{version}", "checkpoints", "last.ckpt")
+                # Se cfg.version está definido, usar diretamente
+                ckpt_path = os.path.join(cfg.ckpt_dir, f"version_{cfg.version}", "checkpoints", "last.ckpt")
 
         model.load_pretrained_model(ckpt_path)
         model = model.eval().cuda()
@@ -720,12 +985,23 @@ def main(cfg):
         torch.save(pred, paths.hmr4d_results)
 
     # ===== Render ===== #
-    render_global_o3d(cfg, 30)
+    render_global(cfg)
+    
+    # Determine which video to use for merge
     if not Path(paths.incam_global_horiz_video).exists():
         Log.info("[Merge Videos]")
-        merge_videos_horizontal(
-            [cfg.text1_video_path, paths.global_video], paths.incam_global_horiz_video
-        )
+        video_for_merge = None
+        if has_video and Path(cfg.video1_path).exists():
+            video_for_merge = cfg.video1_path
+        elif has_text and Path(cfg.text1_video_path).exists():
+            video_for_merge = cfg.text1_video_path
+        
+        if video_for_merge and Path(video_for_merge).exists():
+            merge_videos_horizontal(
+                [video_for_merge, paths.global_video], paths.incam_global_horiz_video
+            )
+        else:
+            Log.warn("[Merge Videos] Input video not found, skipping merge")
 
 
 if __name__ == "__main__":

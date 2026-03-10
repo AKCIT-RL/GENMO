@@ -70,6 +70,16 @@ text_length: 300
 static_cam: False
 verbose: False
 
+# Video input options
+video1_path: null
+video1_name: null
+static_cam1: False
+orig_fps1: 30
+video2_path: null
+video2_name: null
+static_cam2: False
+orig_fps2: 30
+
 paths:
   bbx: ${preprocess_dir}/bbx.pt
   bbx_xyxy_video_overlay: ${preprocess_dir}/bbx_xyxy_video_overlay.mp4
@@ -82,3 +92,21 @@ paths:
   global_video: ${output_dir}/2_global.mp4
   incam_global_horiz_video: ${output_dir}/3_incam_global_horiz.mp4
   slam: ${preprocess_dir}/camera.npy
+  # Video 1 paths
+  bbx1: ${preprocess_dir}/bbx1.pt
+  bbx_xyxy_video_overlay1: ${preprocess_dir}/bbx_xyxy_video_overlay1.mp4
+  vit_features1: ${preprocess_dir}/vit_features1.pt
+  vimo_pred1: ${preprocess_dir}/vimo_pred1.pt
+  vitpose1: ${preprocess_dir}/vitpose1.pt
+  vitpose_video_overlay1: ${preprocess_dir}/vitpose_video_overlay1.mp4
+  slam1: ${preprocess_dir}/camera1.npy
+  incam_video1: ${output_dir}/1_incam1.mp4
+  # Video 2 paths
+  bbx2: ${preprocess_dir}/bbx2.pt
+  bbx_xyxy_video_overlay2: ${preprocess_dir}/bbx_xyxy_video_overlay2.mp4
+  vit_features2: ${preprocess_dir}/vit_features2.pt
+  vimo_pred2: ${preprocess_dir}/vimo_pred2.pt
+  vitpose2: ${preprocess_dir}/vitpose2.pt
+  vitpose_video_overlay2: ${preprocess_dir}/vitpose_video_overlay2.mp4
+  slam2: ${preprocess_dir}/camera2.npy
+  incam_video2: ${output_dir}/1_incam2.mp4
