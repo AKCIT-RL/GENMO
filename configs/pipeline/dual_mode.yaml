@@ -1,6 +1,7 @@
 _target_: genmo.pipeline.genmo_pipeline.Pipeline
 args_denoiser3d: ${network}
 args:
+  return_mid: false  # set true only for debug (keeps all DDIM steps in memory)
   endecoder_opt: ${endecoder}
   use_regression_outputs_prob: 0.
   use_cfg_sampler_for_gen: true

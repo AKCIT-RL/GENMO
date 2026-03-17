@@ -1137,7 +1137,7 @@ class GaussianDiffusion:
             raise NotImplementedError()
 
         final = None
-        intermediates = []
+        intermediates = [] if return_mid else None
         for sample in self.ddim_sample_loop_progressive(
             model,
             shape,
@@ -1162,9 +1162,10 @@ class GaussianDiffusion:
             overwrite_2d=overwrite_2d,
             overwrite_data=overwrite_data,
         ):
-            intermediates.append(sample)
+            if return_mid:
+                intermediates.append(sample)
             final = sample
-        if return_mid:
+        if return_mid and intermediates is not None:
             final["intermediates"] = intermediates
         return final
 
