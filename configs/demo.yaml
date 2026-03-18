@@ -80,6 +80,14 @@ video2_name: null
 static_cam2: False
 orig_fps2: 30
 
+# Music input options
+# music_path: path to a WAV/MP3/FLAC audio file
+# music_duration: clip length in seconds (null = full file)
+# music_fps: feature extraction / output frame rate (must match motion fps = 30)
+music_path: null
+music_duration: null
+music_fps: 30
+
 paths:
   bbx: ${preprocess_dir}/bbx.pt
   bbx_xyxy_video_overlay: ${preprocess_dir}/bbx_xyxy_video_overlay.mp4
