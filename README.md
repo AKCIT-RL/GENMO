@@ -66,7 +66,7 @@ For more details, visit the **[GEM project page →](https://research.nvidia.com
 ### Step 1: Clone the Repository
 
 ```bash
-git clone <repository_url>
+git clone  --recurse-submodules <repository_url>
 cd GENMO
 ```
 
