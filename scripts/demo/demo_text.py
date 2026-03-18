@@ -18,7 +18,11 @@ from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 from genmo.utils.tools import rsync_file_from_remote, find_last_version
 import sys
-print(sys.path)
+
+workspace_root = Path(__file__).resolve().parents[2]
+if str(workspace_root) not in sys.path:
+    sys.path.insert(0, str(workspace_root))
+
 from third_party.GVHMR.hmr4d.utils.geo.hmr_cam import (
     convert_K_to_K4,
     create_camera_sensor,
