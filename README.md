@@ -149,6 +149,33 @@ cd ../..
    - Place the checkpoint file (e.g., `s050000.ckpt`) in `inputs/checkpoints/` directory
    - Example: `inputs/checkpoints/s050000.ckpt`
 
+2. **Download ViTPose Checkpoint** (required for 2D pose estimation in video mode):
+
+   ```bash
+   mkdir -p inputs/checkpoints/vitpose
+   wget -q --show-progress -c \
+     "https://huggingface.co/camenduru/GVHMR/resolve/main/vitpose/vitpose-h-multi-coco.pth" \
+     -O inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth
+   ```
+
+   - Required file: `inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth`
+
+3. **Download GVHMR & HMR2 Checkpoints** (required for video-based motion estimation):
+
+   ```bash
+   mkdir -p inputs/checkpoints/gvhmr inputs/checkpoints/hmr2
+   wget -q --show-progress -c \
+     "https://huggingface.co/camenduru/GVHMR/resolve/main/gvhmr/gvhmr_siga24_release.ckpt" \
+     -O inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt
+   wget -q --show-progress -c \
+     "https://huggingface.co/camenduru/GVHMR/resolve/main/hmr2/epoch%3D10-step%3D25000.ckpt" \
+     -O "inputs/checkpoints/hmr2/epoch=10-step=25000.ckpt"
+   ```
+
+   - Required files:
+     - `inputs/checkpoints/gvhmr/gvhmr_siga24_release.ckpt`
+     - `inputs/checkpoints/hmr2/epoch=10-step=25000.ckpt`
+
 ### Step 6: Download SMPL/SMPLX Body Models
 
 #### SMPLX Models
@@ -192,6 +219,7 @@ The auxiliary files are already included in the repository at `third_party/GVHMR
 
 Copy both files to `inputs/checkpoints/body_models/`:
 
+```bash
 # Make sure the directory exists
 mkdir -p inputs/checkpoints/body_models
 
@@ -276,12 +304,52 @@ python scripts/demo/demo_text.py \
     orig_fps1=30
 ```
 
+### Generate Motion from Music
+
+Generate a 3D dance animation conditioned on an audio file:
+
+```bash
+python scripts/demo/demo_music.py \
+    music_path=/path/to/your/song.wav \
+    music_duration=30 \
+    exp=genmo_lg \
+    ckpt_path=inputs/checkpoints/s050000.ckpt \
+    rsync_ckpt=false
+```
+
+**Parameters:**
+- `music_path`: Path to the input audio file (`.wav`, `.mp3`, etc.)
+- `music_duration`: Duration in seconds to process (optional — omit to use the full audio)
+- `music_fps`: Frame rate for music feature extraction (default: `30`)
+- `exp`: Experiment configuration name (e.g., `genmo_lg`)
+- `ckpt_path`: Direct path to checkpoint file
+- `output_dir`: Output directory (optional, default: `outputs/demo/demo_music/<audio_stem>`)
+- `rsync_ckpt`: Set to `false` to use only local checkpoints
+
+**Example:**
+
+```bash
+python scripts/demo/demo_music.py \
+    music_path=inputs/music/wuthering_heights.wav \
+    music_duration=30 \
+    output_dir=outputs/demo/demo_music/wuthering \
+    exp=genmo_lg \
+    ckpt_path=inputs/checkpoints/s050000.ckpt \
+    rsync_ckpt=false
+```
+
+**Notes:**
+- The model is conditioned on 35-dimensional music features extracted at 30 FPS, matching the AIST++ training format.
+- The final output video is automatically merged with the original audio using `ffmpeg`.
+
+---
+
 ### Output Files
 
-Both modes generate the following files in `outputs/demo/<name>/`:
+All modes generate output files in `outputs/demo/<name>/`:
 
 - `hmr4d_results.pt`: Generated SMPLX parameters (used for visualization and conversion)
-- `2_global.mp4`: Rendered video of motion in global coordinates
+- `2_global.mp4`: Rendered video of motion in global coordinates (with audio, for music mode)
 - `3_incam_global_horiz.mp4`: Combined video with input text/video
 
 For more detailed usage instructions, see [DEMO_SMPLX.md](DEMO_SMPLX.md).
