@@ -69,6 +69,7 @@ text1_video_name: null
 text_length: 300
 static_cam: False
 verbose: False
+pose: false
 
 # Video input options
 video1_path: null

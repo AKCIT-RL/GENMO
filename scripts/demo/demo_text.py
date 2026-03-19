@@ -70,6 +70,19 @@ from genmo.utils.rotation_conversions import quaternion_to_matrix
 CRF = 23  # 17 is lossless, every +6 halves the mp4 size
 
 
+def normalize_pose_flag_for_hydra():
+    """Allow using '--pose' in CLI by translating it to a Hydra override."""
+    if "--pose" not in sys.argv:
+        return
+
+    sys.argv = [arg for arg in sys.argv if arg != "--pose"]
+    has_pose_override = any(
+        arg.startswith("pose=") or arg.startswith("+pose=") for arg in sys.argv[1:]
+    )
+    if not has_pose_override:
+        sys.argv.append("pose=true")
+
+
 def create_text_video(
     output_path,
     text,
@@ -191,6 +204,95 @@ def has_text_input(cfg):
     if hasattr(cfg, 'text1') and cfg.text1 is not None and str(cfg.text1).strip():
         return True
     return False
+
+
+def save_preprocess_debug_pngs(video_path, bbx_path, vitpose, output_dir, vid=1, frame_idx=0):
+    """
+    Save one YOLO bbox PNG and one ViTPose PNG for quick inspection.
+    This is intentionally lightweight and runs once per preprocess call.
+    """
+    try:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        cap = cv2.VideoCapture(str(video_path))
+        if frame_idx > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            Log.warn(f"[Debug PNG] Could not read frame {frame_idx} from video: {video_path}")
+            return
+
+        bbx_data = torch.load(bbx_path, map_location="cpu")
+        bbx_xyxy = bbx_data.get("bbx_xyxy", None)
+
+        if bbx_xyxy is not None:
+            if isinstance(bbx_xyxy, torch.Tensor):
+                bbx_xyxy = bbx_xyxy.cpu().numpy()
+            frame_idx_bbx = min(frame_idx, len(bbx_xyxy) - 1)
+            x1, y1, x2, y2 = bbx_xyxy[frame_idx_bbx].astype(int).tolist()
+
+            yolo_img = frame.copy()
+            cv2.rectangle(yolo_img, (x1, y1), (x2, y2), (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(
+                yolo_img,
+                "YOLO track",
+                (x1, max(20, y1 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            yolo_png = output_dir / f"yolo_debug_vid{vid}_f{frame_idx_bbx:04d}.png"
+            cv2.imwrite(str(yolo_png), yolo_img)
+            Log.info(f"[Debug PNG] Saved YOLO bbox image: {yolo_png}")
+        else:
+            Log.warn(f"[Debug PNG] bbx_xyxy not found in {bbx_path}; skipping YOLO PNG")
+
+        if isinstance(vitpose, tuple):
+            vitpose = vitpose[0]
+        if not isinstance(vitpose, torch.Tensor):
+            vitpose = torch.as_tensor(vitpose)
+
+        if vitpose.ndim == 3 and vitpose.shape[0] > 0:
+            frame_idx_pose = min(frame_idx, int(vitpose.shape[0]) - 1)
+            kps = vitpose[frame_idx_pose].detach().cpu().numpy()  # (17, 3)
+
+            pose_img = frame.copy()
+            edges = [
+                (0, 1), (0, 2), (1, 3), (2, 4),
+                (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+                (5, 11), (6, 12), (11, 12),
+                (11, 13), (13, 15), (12, 14), (14, 16),
+            ]
+
+            for a, b in edges:
+                xa, ya, ca = kps[a]
+                xb, yb, cb = kps[b]
+                if ca > 0.2 and cb > 0.2:
+                    cv2.line(
+                        pose_img,
+                        (int(xa), int(ya)),
+                        (int(xb), int(yb)),
+                        (0, 255, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+            for x, y, c in kps:
+                color = (0, 0, 255) if c > 0.2 else (100, 100, 100)
+                cv2.circle(pose_img, (int(x), int(y)), 4, color, -1, cv2.LINE_AA)
+
+            pose_png = output_dir / f"pose_debug_vid{vid}_f{frame_idx_pose:04d}.png"
+            cv2.imwrite(str(pose_png), pose_img)
+            Log.info(f"[Debug PNG] Saved pose image: {pose_png}")
+        else:
+            Log.warn("[Debug PNG] Unexpected vitpose format; skipping pose PNG")
+
+    except Exception as e:
+        Log.warn(f"[Debug PNG] Failed to export debug PNGs: {e}")
 
 
 def load_video_data(cfg, vid=1):
@@ -399,13 +501,16 @@ def run_preprocess(cfg, vid=1):
     # Get VitPose
     if not Path(vitpose_path).exists():
         Path(vitpose_path).parent.mkdir(parents=True, exist_ok=True)
+        Log.info(f"[Pose] Running VitPose extraction from video: {video_path}")
         vitpose_extractor = VitPoseExtractor()
         vitpose = vitpose_extractor.extract(video_path, bbx_xys)
+        Log.info(f"[Pose] VitPose extraction finished. Raw type={type(vitpose)}")
         torch.save(vitpose, vitpose_path)
+        Log.info(f"[Pose] Saved VitPose to: {vitpose_path}")
         del vitpose_extractor
     else:
         vitpose = torch.load(vitpose_path)
-        Log.info(f"[Preprocess] vitpose from {vitpose_path}")
+        Log.info(f"[Pose] Loaded cached VitPose from: {vitpose_path}")
     if verbose:
         video = read_video_np(video_path)
         video_overlay = draw_coco17_skeleton_batch(video, vitpose, 0.5)
@@ -413,6 +518,29 @@ def run_preprocess(cfg, vid=1):
 
     if isinstance(vitpose, tuple):
         vitpose = vitpose[0]
+
+    if isinstance(vitpose, torch.Tensor) and vitpose.ndim == 3 and vitpose.shape[0] > 0:
+        kp0 = vitpose[0, 0].tolist()
+        Log.info(
+            "[Pose] Final pose tensor shape={} | frame0 kp0(x,y,conf)=({:.1f}, {:.1f}, {:.3f})".format(
+                tuple(vitpose.shape), kp0[0], kp0[1], kp0[2]
+            )
+        )
+    else:
+        Log.warn(f"[Pose] Unexpected VitPose format: type={type(vitpose)}")
+
+    # Export debug PNGs only when requested via pose flag.
+    if getattr(cfg, "pose", False):
+        save_preprocess_debug_pngs(
+            video_path=video_path,
+            bbx_path=bbx_path,
+            vitpose=vitpose,
+            output_dir=cfg.output_dir,
+            vid=vid,
+            frame_idx=0,
+        )
+    else:
+        Log.info("[Debug PNG] Skipped. Use --pose to export YOLO/pose PNGs.")
 
     # Get DROID-SLAM results
     if not static_cam:  # use slam to get cam rotation
@@ -1009,4 +1137,5 @@ def main(cfg):
 
 
 if __name__ == "__main__":
+    normalize_pose_flag_for_hydra()
     main()
