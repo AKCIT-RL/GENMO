@@ -250,18 +250,18 @@ def merge_videos_horizontal(in_video_paths: list, out_video_path: str):
     heights = [int(stream["height"]) for stream in video_streams]
     max_height = max(heights)
     
-    # Create inputs and resize to same height if necessary
+    # Normalizar altura e fps antes do hstack.
+    # fps=30 garante que vídeos com fps diferente (ex: 25fps) não causem hang no hstack.
+    max_height_even = max_height if max_height % 2 == 0 else max_height - 1
     inputs = []
     for i, path in enumerate(in_video_paths):
         input_stream = ffmpeg.input(path)
-        if int(video_streams[i]["height"]) != max_height:
-            # Calculate proportional width maintaining aspect ratio
-            width = int(video_streams[i]["width"])
-            height = int(video_streams[i]["height"])
-            new_width = int(width * max_height / height)
-            # Garantir que a largura seja par (requisito do ffmpeg)
+        input_stream = ffmpeg.filter(input_stream, "fps", fps=30)
+        h = int(video_streams[i]["height"])
+        if h != max_height_even:
+            w = int(video_streams[i]["width"])
+            new_width = int(w * max_height_even / h)
             new_width = new_width if new_width % 2 == 0 else new_width - 1
-            max_height_even = max_height if max_height % 2 == 0 else max_height - 1
             input_stream = ffmpeg.filter(input_stream, "scale", new_width, max_height_even)
         inputs.append(input_stream)
     
