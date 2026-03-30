@@ -1,0 +1,34 @@
+# Ambientes virtuais
+.venv/
+
+# Dados gerados (montados como volumes em runtime)
+outputs/
+inputs/checkpoints/
+
+# Third-party compilados (DPVO não é necessário para câmera estática)
+third_party/GVHMR/third-party/DPVO/
+
+# Arquivos Python compilados
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Egg-info e build artifacts
+**/*.egg-info/
+**/dist/
+**/build/
+
+# Git
+.git/
+.gitmodules
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs e checkpoints de treinamento
+wandb/
+lightning_logs/

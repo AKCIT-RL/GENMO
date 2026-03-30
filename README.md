@@ -232,6 +232,54 @@ cp third_party/GVHMR/hmr4d/utils/body_model/smpl_neutral_J_regressor.pt inputs/c
 # - inputs/checkpoints/body_models/smpl_neutral_J_regressor.pt
 ```
 
+## 🐳 Docker
+
+A `Dockerfile` is provided for running GENMO in a container, without needing to install a Python environment or CUDA toolkit manually.
+
+### Prerequisites
+
+- Docker Engine 20.10+
+- [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- Pretrained models downloaded to `inputs/checkpoints/` (same as the manual setup — see steps 5 and 6 above)
+
+That's it — no `conda`, no `venv`, no CUDA install needed on the host.
+
+### Build
+
+```bash
+# From the GENMO/ directory (or via CopyCat's compose)
+docker build -t copycat-genmo:latest .
+
+# Or via CopyCat Docker Compose
+docker compose -f ../docker-compose.yml build genmo
+```
+
+### Run
+
+The image is designed to be used via CopyCat's `run_pipeline_docker.py`, which handles volume mounts automatically. For standalone use:
+
+```bash
+docker run --rm --gpus all \
+  -v ./inputs:/app/inputs:ro \
+  -v ./outputs:/app/outputs \
+  copycat-genmo:latest \
+  python scripts/demo/demo_text.py \
+    video1_path=/app/inputs/videos/my_video.mp4 \
+    video1_name=my_video \
+    exp=genmo_lg \
+    ckpt_path=/app/inputs/checkpoints/s050000.ckpt \
+    rsync_ckpt=false \
+    static_cam1=true
+```
+
+### Notes
+
+- The `outputs/` and `inputs/checkpoints/` directories are excluded from the image via `.dockerignore`. Mount them as volumes.
+- HuggingFace model cache is redirected to `/tmp/hf_cache` (set via `HF_HOME`). To persist across runs, mount a directory to `/tmp/hf_cache`.
+- Dynamic camera mode (`static_cam=false`) requires DPVO compiled inside the container — not included by default.
+
+---
+
 ## 🚀 Quick Start
 
 ### Generate Motion from Text
