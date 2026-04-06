@@ -3,6 +3,7 @@
 inputs
 out
 outputs
+hf_cache/
 models/
 imgs_1
 
