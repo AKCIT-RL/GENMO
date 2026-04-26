@@ -365,11 +365,29 @@ def load_video_data(cfg, vid=1):
     T_w2c[:, :3, :3] = R_w2c
     T_w2c[:, :3, 3] = t_w2c
     gt_T_w2c = T_w2c.clone()
-    
-    # Determinar gênero (padrão: neutral)
+
+    # Align all frame-dependent tensors to the minimum observed length.
+    # YOLO tracking and VitPose may produce fewer frames than the raw video
+    # (e.g. frames where no person is detected are skipped), causing a size
+    # mismatch in normalize_kp2d.  Trim everything to the shortest sequence.
+    effective_length = min(length, bbx_xys.shape[0], kp2d.shape[0], f_imgseq.shape[0])
+    if effective_length < length:
+        length = effective_length
+        bbx_xys = bbx_xys[:length]
+        kp2d = kp2d[:length]
+        f_imgseq = f_imgseq[:length]
+        R_w2c = R_w2c[:length]
+        t_w2c = t_w2c[:length]
+        K_fullimg = K_fullimg[:length]
+        cam_angvel = cam_angvel[:length]
+        cam_tvel = cam_tvel[:length]
+        T_w2c = T_w2c[:length]
+        gt_T_w2c = gt_T_w2c[:length]
+
+    # Determine gender (default: neutral)
     gender = getattr(cfg, 'gender', 'neutral')
     
-    # Create data structure
+    # Build data dict
     data = {
         "meta": [
             {
