@@ -4,6 +4,8 @@
 # Dados gerados (montados como volumes em runtime)
 outputs/
 inputs/checkpoints/
+# HuggingFace cache (t5-3b ~11GB) — montado como volume em runtime, nunca no build
+hf_cache/
 
 # Third-party compilados (DPVO não é necessário para câmera estática)
 third_party/GVHMR/third-party/DPVO/

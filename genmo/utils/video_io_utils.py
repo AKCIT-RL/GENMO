@@ -252,17 +252,16 @@ def merge_videos_horizontal(in_video_paths: list, out_video_path: str):
     
     # Normalizar altura e fps antes do hstack.
     # fps=30 garante que vídeos com fps diferente (ex: 25fps) não causem hang no hstack.
+    # O filtro scale é aplicado a TODOS os inputs (não só aos de altura diferente)
+    # porque vídeos com metadado de rotação (ex: filmados no celular) são auto-
+    # rotacionados na decodificação e a altura real difere da altura reportada pelo
+    # probe. Forçar scale=-2:H sobre o frame já decodificado garante alturas iguais.
     max_height_even = max_height if max_height % 2 == 0 else max_height - 1
     inputs = []
     for i, path in enumerate(in_video_paths):
         input_stream = ffmpeg.input(path)
         input_stream = ffmpeg.filter(input_stream, "fps", fps=30)
-        h = int(video_streams[i]["height"])
-        if h != max_height_even:
-            w = int(video_streams[i]["width"])
-            new_width = int(w * max_height_even / h)
-            new_width = new_width if new_width % 2 == 0 else new_width - 1
-            input_stream = ffmpeg.filter(input_stream, "scale", new_width, max_height_even)
+        input_stream = ffmpeg.filter(input_stream, "scale", -2, max_height_even)
         inputs.append(input_stream)
     
     # Mesclar horizontalmente

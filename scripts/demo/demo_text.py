@@ -1147,9 +1147,16 @@ def main(cfg):
             video_for_merge = cfg.text1_video_path
         
         if video_for_merge and Path(video_for_merge).exists():
-            merge_videos_horizontal(
-                [video_for_merge, paths.global_video], paths.incam_global_horiz_video
-            )
+            try:
+                merge_videos_horizontal(
+                    [video_for_merge, paths.global_video], paths.incam_global_horiz_video
+                )
+            except Exception as e:
+                # The side-by-side comparison video is purely cosmetic and runs
+                # after hmr4d_results.pt is already saved. A rendering failure
+                # (e.g. ffmpeg edge cases with rotated input videos) must not
+                # fail the whole pipeline.
+                Log.warn(f"[Merge Videos] Skipped due to render error: {e}")
         else:
             Log.warn("[Merge Videos] Input video not found, skipping merge")
 
